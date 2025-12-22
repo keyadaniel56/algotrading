@@ -2354,7 +2354,7 @@ def main():
     print("Access the UI at http://localhost:8000")
     print("=" * 60)
     load_dotenv() 
-    # DERIV_TOKEN = 'y5XlAyZZDrPz764'
+
     # print(f"Using token: {DERIV_TOKEN[:8]}...")
     DERIV_TOKEN = os.getenv('DERIV_TOKEN')
     bot = FixedDerivTradingBot(token=DERIV_TOKEN, demo=True)
