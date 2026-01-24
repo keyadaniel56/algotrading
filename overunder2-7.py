@@ -966,23 +966,13 @@ with tab_logs:
         except queue.Empty:
             break
     
-    # Display logs
-    log_container = st.container(height=500)
+    log_container = st.expander("Live Logs", expanded=True)
     with log_container:
         for log in st.session_state.logs[-50:]:
-            if "✅" in log or "WIN" in log:
-                st.success(log)
-            elif "❌" in log or "LOSS" in log:
-                st.error(log)
-            elif "⚠️" in log or "Error" in log:
-                st.warning(log)
-            elif "🔍" in log or "Signal" in log:
-                st.info(log)
-            else:
-                st.text(log)
-    
-    # Controls
-    col1, col2, col3 = st.columns(3)
+            st.write(log)
+        
+        # Controls
+        col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Clear Logs", use_container_width=True):
             st.session_state.logs = []
