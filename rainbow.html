@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deriv Trading Bot</title>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #f4f4f4;
+            color: #333;
+            margin: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #007bff;
+        }
+        #controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #log {
+            white-space: pre-wrap;
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 400px;
+            overflow-y: scroll;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <h1>Deriv Trading Bot</h1>
+    <div id="controls">
+        <button id="start">Start Bot</button>
+        <button id="stop" disabled>Stop Bot</button>
+    </div>
+    <div id="log"></div>
+
+    <script>
+        // Constants from Python script
+        const API_TOKEN = 'y5XlAyZZDrPz764';
+        const APP_ID = 1089;
+        const SYMBOL = 'R_100';
+        const WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
+        const STAKE = 1;
+        const DURATION = 5;
+        const CONTRACT_TYPE_BUY = 'CALL';
+        const CONTRACT_TYPE_SELL = 'PUT';
+        const SHORT_TIMEFRAME = '1min';
+        const LONG_TIMEFRAME = 15 * 60 * 1000; // 15 minutes in ms
+        const GRANULARITY = 60; // 1 min
+        const RETRY_DELAY = 5000;
+        const MAX_RETRIES = 10;
+
+        let ws = null;
+        let barData = []; // Array of {timestamp: Date, open, high, low, close}
+        let longData = []; // Resampled
+        let tickData = []; // Current minute ticks {timestamp: Date, quote}
+        let lastTickTs = null;
+        let lastTradeTime = null;
+        let openContracts = new Set();
+        let running = false;
+
+        const logElement = document.getElementById('log');
+        const startButton = document.getElementById('start');
+        const stopButton = document.getElementById('stop');
+
+        function log(message) {
+            logElement.textContent += message + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        async function connectWithRetry() {
+            let retries = 0;
+            while (retries < MAX_RETRIES) {
+                try {
+                    ws = new WebSocket(WS_URL);
+                    ws.onopen = onOpen;
+                    ws.onmessage = onMessage;
+                    ws.onclose = onClose;
+                    ws.onerror = onError;
+                    log('Connecting...');
+                    await new Promise((resolve, reject) => {
+                        ws.onopen = () => {
+                            log('Connected successfully.');
+                            resolve();
+                        };
+                        ws.onerror = reject;
+                    });
+                    return;
+                } catch (e) {
+                    log(`Connection failed: ${e}`);
+                    retries++;
+                    log(`Retrying in ${RETRY_DELAY / 1000} seconds... (Attempt ${retries}/${MAX_RETRIES})`);
+                    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                }
+            }
+            throw new Error('Max retries exceeded.');
+        }
+
+        function onOpen() {
+            send({ authorize: API_TOKEN });
+        }
+
+        function onMessage(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.msg_type === 'authorize') {
+                if (data.error) {
+                    log(`Auth Error: ${JSON.stringify(data.error)}`);
+                    return;
+                }
+                log('Authorized successfully.');
+                loadHistoricalData();
+                return;
+            }
+
+            if (data.msg_type === 'history') {
+                handleHistoricalData(data);
+                return;
+            }
+
+            if (data.msg_type === 'proposal_open_contract') {
+                handleProposalOpenContract(data.proposal_open_contract);
+                return;
+            }
+
+            if (data.msg_type === 'buy') {
+                if (data.buy) {
+                    openContracts.add(data.buy.contract_id);
+                }
+                log(`Trade Placed: ${JSON.stringify(data)}`);
+                return;
+            }
+
+            if (data.tick) {
+                handleTick(data.tick);
+            }
+        }
+
+        function onClose() {
+            log('WebSocket closed.');
+            if (running) {
+                log('Reconnecting...');
+                connectWithRetry();
+            }
+        }
+
+        function onError(error) {
+            log(`WebSocket error: ${error}`);
+        }
+
+        function send(payload) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(payload));
+            }
+        }
+
+        async function loadHistoricalData() {
+            const startTime = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+            const endTime = 'latest';
+            send({
+                ticks_history: SYMBOL,
+                start: startTime,
+                end: endTime,
+                style: 'candles',
+                granularity: GRANULARITY
+            });
+        }
+
+        function handleHistoricalData(data) {
+            if (data.candles) {
+                barData = data.candles.map(c => ({
+                    timestamp: new Date(c.epoch * 1000),
+                    open: parseFloat(c.open),
+                    high: parseFloat(c.high),
+                    low: parseFloat(c.low),
+                    close: parseFloat(c.close)
+                }));
+                log(`Loaded ${barData.length} historical bars.`);
+                barData = removeDuplicates(barData);
+                computeShortIndicators();
+                longData = resampleToLong();
+                computeLongIndicators();
+                subscribeToTicks();
+            } else {
+                log(`Error fetching history: ${JSON.stringify(data)}`);
+                barData = [];
+            }
+        }
+
+        function removeDuplicates(data) {
+            const seen = new Set();
+            return data.filter(item => {
+                const ts = item.timestamp.getTime();
+                if (seen.has(ts)) return false;
+                seen.add(ts);
+                return true;
+            });
+        }
+
+        function subscribeToTicks() {
+            send({ ticks: SYMBOL, subscribe: 1 });
+        }
+
+        function handleTick(tick) {
+            const ts = new Date(tick.epoch * 1000);
+            const quote = parseFloat(tick.quote);
+            log(`Received tick: ${ts.toISOString()} - ${quote}`);
+            tickData.push({ timestamp: ts, quote });
+
+            if (lastTickTs) {
+                const lastMinute = new Date(Math.floor(lastTickTs.getTime() / 60000) * 60000);
+                const currentMinute = new Date(Math.floor(ts.getTime() / 60000) * 60000);
+                if (currentMinute > lastMinute) {
+                    aggregateBar(lastMinute);
+                }
+            }
+
+            lastTickTs = ts;
+
+            // Trim tickData
+            if (tickData.length > 1000) {
+                tickData = tickData.slice(-1000);
+            }
+        }
+
+        function aggregateBar(prevBarStart) {
+            const prevBarEnd = new Date(prevBarStart.getTime() + 60000);
+            const prevTicks = tickData.filter(t => t.timestamp >= prevBarStart && t.timestamp < prevBarEnd);
+            if (prevTicks.length > 0) {
+                const quotes = prevTicks.map(t => t.quote);
+                const newBar = {
+                    timestamp: prevBarStart,
+                    open: quotes[0],
+                    high: Math.max(...quotes),
+                    low: Math.min(...quotes),
+                    close: quotes[quotes.length - 1]
+                };
+                barData.push(newBar);
+                barData = removeDuplicates(barData);
+                computeShortIndicators();
+                longData = resampleToLong();
+                computeLongIndicators();
+
+                const latestShort = barData[barData.length - 1];
+                const latestLong = longData[longData.length - 1] || {};
+                const trendBull = latestLong.avg_short > latestLong.avg_long;
+                const trendBear = latestLong.avg_short < latestLong.avg_long;
+
+                const hasPrev = barData.length > 1;
+                const prevMACD = hasPrev ? barData[barData.length - 2].MACD : NaN;
+                const prevMACDSignal = hasPrev ? barData[barData.length - 2].MACD_signal : NaN;
+
+                const buySignal = trendBull && (prevMACD <= prevMACDSignal) && (latestShort.MACD > latestShort.MACD_signal);
+                const sellSignal = trendBear && (prevMACD >= prevMACDSignal) && (latestShort.MACD < latestShort.MACD_signal);
+
+                log(`\nAdded new bar at ${prevBarStart.toISOString()}:`);
+                log(JSON.stringify(newBar));
+                log('Key short indicators:');
+                log(`close: ${latestShort.close}, MACD: ${latestShort.MACD}, MACD_signal: ${latestShort.MACD_signal}`);
+                if (latestLong) {
+                    log('Long trend:');
+                    log(`avg_short: ${latestLong.avg_short}, avg_long: ${latestLong.avg_long}`);
+                    log(`Trend bull: ${trendBull}, bear: ${trendBear}`);
+                }
+                log(`Signals: Buy=${buySignal}, Sell=${sellSignal}\n`);
+
+                const now = Date.now();
+                if (openContracts.size === 0 && (!lastTradeTime || (now - lastTradeTime) > 60000)) {
+                    if (buySignal) {
+                        placeTrade(CONTRACT_TYPE_BUY);
+                        lastTradeTime = now;
+                    } else if (sellSignal) {
+                        placeTrade(CONTRACT_TYPE_SELL);
+                        lastTradeTime = now;
+                    }
+                } else if (openContracts.size > 0) {
+                    log('Skipped trade: Open contracts still active.');
+                } else {
+                    log('Skipped trade: Too soon after last trade.');
+                }
+            }
+        }
+
+        function resampleToLong() {
+            if (barData.length === 0) return [];
+            const resampled = [];
+            let currentStart = new Date(Math.floor(barData[0].timestamp.getTime() / LONG_TIMEFRAME) * LONG_TIMEFRAME);
+            let currentBar = { timestamp: currentStart, open: barData[0].open, high: barData[0].high, low: barData[0].low, close: barData[0].close };
+
+            for (let i = 1; i < barData.length; i++) {
+                const bar = barData[i];
+                const barStart = new Date(Math.floor(bar.timestamp.getTime() / LONG_TIMEFRAME) * LONG_TIMEFRAME);
+                if (barStart.getTime() === currentStart.getTime()) {
+                    currentBar.high = Math.max(currentBar.high, bar.high);
+                    currentBar.low = Math.min(currentBar.low, bar.low);
+                    currentBar.close = bar.close;
+                } else {
+                    resampled.push(currentBar);
+                    currentStart = barStart;
+                    currentBar = { timestamp: currentStart, open: bar.open, high: bar.high, low: bar.low, close: bar.close };
+                }
+            }
+            resampled.push(currentBar);
+            return resampled.filter(bar => bar); // Remove NaN if any
+        }
+
+        function computeShortIndicators() {
+            const closes = barData.map(b => b.close);
+            const ema12 = exponentialMovingAverage(closes, 12);
+            const ema26 = exponentialMovingAverage(closes, 26);
+            const macd = ema12.map((v, i) => v - (ema26[i] || 0));
+            const macdSignal = exponentialMovingAverage(macd, 9);
+
+            barData.forEach((bar, i) => {
+                bar.MACD = macd[i] || NaN;
+                bar.MACD_signal = macdSignal[i] || NaN;
+            });
+        }
+
+        function computeLongIndicators() {
+            const closes = longData.map(b => b.close);
+            const shortPeriods = [3, 5, 8, 10, 12, 15];
+            const longPeriods = [30, 35, 40, 45, 50, 60];
+
+            const shortEmas = shortPeriods.map(p => exponentialMovingAverage(closes, p));
+            const longEmas = longPeriods.map(p => exponentialMovingAverage(closes, p));
+
+            longData.forEach((bar, i) => {
+                bar.avg_short = average(shortEmas.map(ema => ema[i] || 0));
+                bar.avg_long = average(longEmas.map(ema => ema[i] || 0));
+            });
+        }
+
+        function exponentialMovingAverage(prices, window) {
+            if (prices.length < window) return new Array(prices.length).fill(NaN);
+            let ema = new Array(prices.length).fill(NaN);
+            let sum = 0;
+            for (let i = 0; i < window; i++) {
+                sum += prices[i];
+            }
+            ema[window - 1] = sum / window;
+            const multiplier = 2 / (window + 1);
+            for (let i = window; i < prices.length; i++) {
+                ema[i] = (prices[i] * multiplier) + (ema[i - 1] * (1 - multiplier));
+            }
+            return ema;
+        }
+
+        function average(arr) {
+            return arr.reduce((a, b) => a + b, 0) / arr.length;
+        }
+
+        function placeTrade(contractType) {
+            send({
+                buy: 1,
+                price: STAKE,
+                subscribe: 1,
+                parameters: {
+                    amount: STAKE,
+                    basis: 'stake',
+                    contract_type: contractType,
+                    currency: 'USD',
+                    duration: DURATION,
+                    duration_unit: 'm',
+                    symbol: SYMBOL
+                }
+            });
+        }
+
+        function handleProposalOpenContract(poc) {
+            const contractId = poc.contract_id;
+            if (openContracts.has(contractId)) {
+                if (poc.is_sold === 1 || poc.status !== 'open') {
+                    openContracts.delete(contractId);
+                    log(`Contract ${contractId} closed: ${JSON.stringify(poc)}`);
+                }
+            }
+        }
+
+        startButton.addEventListener('click', async () => {
+            if (!running) {
+                running = true;
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                await connectWithRetry();
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            if (running) {
+                running = false;
+                if (ws) ws.close();
+                startButton.disabled = false;
+                stopButton.disabled = true;
+                log('Bot stopped.');
+            }
+        });
+    </script>
+</body>
+</html>
