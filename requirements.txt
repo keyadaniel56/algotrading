@@ -4,6 +4,4 @@ numpy==1.24.0
 pandas==2.0.0
 scikit-learn==1.3.0
 scipy==1.11.0
-pandas_ta==0.3.14b0
-libta-lib0
-libta-lib0-dev
+ta==0.10.2
