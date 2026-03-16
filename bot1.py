@@ -17,7 +17,7 @@ import websocket
 #               CONFIGURABLE PARAMETERS
 # ────────────────────────────────────────────────
 APP_ID        = "1089"
-AUTH_TOKEN    = "WFabi7aeCbFjgvp"
+AUTH_TOKEN    = ""
 SYMBOL        = "R_100"
 DURATION      = 1
 DURATION_UNIT = "t"

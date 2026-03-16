@@ -22,7 +22,7 @@ import websocket
 #               CONFIGURABLE PARAMETERS
 # ────────────────────────────────────────────────
 APP_ID = "1089"                     # Your Deriv app ID
-AUTH_TOKEN = "WFabi7aeCbFjgvp"      # Your API token (keep secret!)
+AUTH_TOKEN = ""      # Your API token (keep secret!)
 SYMBOL = "R_100"                    # Volatility 100 Index
 DURATION = 1                        # ticks
 DURATION_UNIT = "t"
