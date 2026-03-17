@@ -17,21 +17,21 @@ import websocket
 #               CONFIGURABLE PARAMETERS
 # ────────────────────────────────────────────────
 APP_ID        = "1089"
-AUTH_TOKEN    = ""
+AUTH_TOKEN    = "WFabi7aeCbFjgvp"
 SYMBOL        = "R_100"
 DURATION      = 1
 DURATION_UNIT = "t"
 CURRENCY      = "USD"
 
-INITIAL_STAKE          = 1.0
+INITIAL_STAKE          = 0.35
 MARTINGALE             = True    # normal mode martingale
 MARTINGALE_MULTIPLIER  = 2.0
 
 # Recovery always uses its own martingale regardless of MARTINGALE flag
 RECOVERY_MARTINGALE_MULTIPLIER = 2.0
 MAX_CONSECUTIVE_LOSSES = 30
-STOP_LOSS              = -100.0
-TAKE_PROFIT            = 100.0
+STOP_LOSS              = -10.0
+TAKE_PROFIT            = 0.70
 
 SEQ_LEN              = 20
 WINDOW_SIZE          = 150
