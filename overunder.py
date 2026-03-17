@@ -1,365 +1,326 @@
-import websocket
+# deriv_digit_ai_bot.py
+# Requirements:
+# pip install websocket-client torch numpy
+
 import json
-import numpy as np
-from math import floor
-from flask import Flask, render_template_string
+import math
+import random
+import signal
+import sys
 import threading
+import time
+from collections import deque
+from typing import Dict, List, Optional, Tuple
 
-# Simple Markov Chain for last digits prediction
-class MarkovChain:
-    def __init__(self, states=10):
-        self.states = states
-        self.transition = np.zeros((states, states))
-        self.counts = np.zeros((states, states))
-        for i in range(states):
-            self.transition[i] = np.ones(states) / states
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import websocket
 
-    def update(self, from_digit, to_digit):
-        self.counts[from_digit][to_digit] += 1
-        total = np.sum(self.counts[from_digit])
-        if total > 0:
-            self.transition[from_digit] = self.counts[from_digit] / total
+# ────────────────────────────────────────────────
+#               CONFIGURABLE PARAMETERS
+# ────────────────────────────────────────────────
+APP_ID = "1089"                     # Your Deriv app ID
+AUTH_TOKEN = ""      # Your API token (keep secret!)
+SYMBOL = "R_100"                    # Volatility 100 Index
+DURATION = 1                        # ticks
+DURATION_UNIT = "t"
+CURRENCY = "USD"
+INITIAL_STAKE = 1.0
+MARTINGALE = False
+MARTINGALE_MULTIPLIER = 2.0
+MAX_CONSECUTIVE_LOSSES = 3
+STOP_LOSS = -100.0
+TAKE_PROFIT = 100.0
 
-    def batch_update(self, digits):
-        for i in range(1, len(digits)):
-            self.counts[digits[i-1]][digits[i]] += 1
-        for from_digit in range(self.states):
-            total = np.sum(self.counts[from_digit])
-            if total > 0:
-                self.transition[from_digit] = self.counts[from_digit] / total
-            else:
-                self.transition[from_digit] = np.ones(self.states) / self.states
+# AI / Strategy parameters
+WINDOW_SIZE = 100
+EMBEDDING_DIM = 8
+HIDDEN_SIZE = 32
+LEARNING_RATE = 0.005
+TRAIN_EPOCHS_INITIAL = 80
+TRAIN_EPOCHS_UPDATE = 8
+UPDATE_MODEL_EVERY = 12             # new ticks after initial training
+PROB_THRESHOLD_UNDER = 0.18         # enter UNDER if predicted P(digit<2) > this
+PROB_THRESHOLD_OVER = 0.82          # enter OVER if predicted P(digit>1) > this
 
-    def predict_prob_over(self, current_digit, threshold):
-        probs = self.transition[current_digit]
-        return np.sum(probs[threshold+1:])  # P > threshold
+WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 
-    def predict_prob_under(self, current_digit, threshold):
-        probs = self.transition[current_digit]
-        return np.sum(probs[:threshold])  # P < threshold
+# ────────────────────────────────────────────────
+#                 GLOBAL STATE
+# ────────────────────────────────────────────────
+last_digits: deque[int] = deque(maxlen=WINDOW_SIZE)
+total_profit = 0.0
+current_stake = INITIAL_STAKE
+consecutive_losses = 0
+win_low = win_high = loss_low = loss_high = 0
 
-# Deriv Bot Class
-class DerivBot:
-    def __init__(self, token, app_id, symbol='1HZ75V', duration=1, stake=0.35, win_stake=0.35, expected_profit=0.70, stop_loss=10, max_losses=6):
-        self.ws = None
-        self.token = token
-        self.app_id = app_id
-        self.symbol = symbol  # Volatility 75 Index
-        self.duration = duration
-        self.stake = stake
-        self.current_stake = round(stake, 2)
-        self.win_stake = round(win_stake, 2)
-        self.loss = 0
-        self.count_loss = 0
-        self.total_profit = 0
-        self.total_loss = 0.0
-        self.expected_profit = expected_profit
-        self.stop_loss = stop_loss
-        self.max_losses = max_losses
-        self.payout_percent = 39.0
-        self.martingale_split = 2.0
-        self.last_digit = None
-        self.recent_digits = []
-        self.contract_id = None
-        self.active_contract = False
-        self.ticks_since_buy = 0
-        self.markov = MarkovChain()
-        self.history_loaded = False
-        self.req_id = 1
+model: Optional[nn.Module] = None
+optimizer: Optional[optim.Optimizer] = None
+criterion = nn.CrossEntropyLoss()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # For dashboard
-        self.dashboard_app = Flask(__name__)
-        self.setup_dashboard()
-        self.dashboard_thread = threading.Thread(target=self.run_dashboard)
-        self.dashboard_thread.daemon = True
-        self.dashboard_thread.start()
+ws: Optional[websocket.WebSocketApp] = None
+running = True
 
-    def setup_dashboard(self):
-        @self.dashboard_app.route('/')
-        def index():
-            html = """
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Deriv Bot Dashboard</title>
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    h1 { color: #333; }
-                    .stat { margin: 10px 0; font-size: 18px; }
-                    .positive { color: green; }
-                    .negative { color: red; }
-                </style>
-            </head>
-            <body>
-                <h1>Deriv Trading Bot Dashboard</h1>
-                <div class="stat">Total Profit: <span class="{{ 'positive' if total_profit > 0 else 'negative' }}">${{ total_profit }}</span></div>
-                <div class="stat">Total Loss: <span class="negative">${{ total_loss }}</span></div>
-                <div class="stat">Current Stake: ${{ current_stake }}</div>
-                <div class="stat">Consecutive Losses: {{ loss }}</div>
-                <div class="stat">Count Loss: {{ count_loss }}</div>
-                <div class="stat">Active Contract: {{ 'Yes' if active_contract else 'No' }}</div>
-                <div class="stat">Last Digit: {{ last_digit if last_digit is not None else 'N/A' }}</div>
-                <div class="stat">Recent Digits: {{ recent_digits }}</div>
-                <p>Refresh the page to update stats.</p>
-            </body>
-            </html>
-            """
-            return render_template_string(html, 
-                                          total_profit=self.total_profit,
-                                          total_loss=self.total_loss,
-                                          current_stake=self.current_stake,
-                                          loss=self.loss,
-                                          count_loss=self.count_loss,
-                                          active_contract=self.active_contract,
-                                          last_digit=self.last_digit,
-                                          recent_digits=self.recent_digits)
+lock = threading.Lock()
 
-    def run_dashboard(self):
-        self.dashboard_app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+# ────────────────────────────────────────────────
+#                    LSTM MODEL
+# ────────────────────────────────────────────────
+class DigitLSTM(nn.Module):
+    def __init__(self, vocab_size=10, embed_dim=8, hidden_size=32):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, vocab_size)
 
-    def connect(self):
-        ws_url = f"wss://ws.binaryws.com/websockets/v3?app_id={self.app_id}"
-        self.ws = websocket.WebSocketApp(ws_url,
-                                         on_open=self.on_open,
-                                         on_message=self.on_message,
-                                         on_error=self.on_error,
-                                         on_close=self.on_close)
-        self.ws.run_forever()
+    def forward(self, x):
+        # x: (batch, seq_len) → long tensor of digit indices
+        embeds = self.embedding(x)                     # → (batch, seq_len, embed)
+        lstm_out, _ = self.lstm(embeds)                # → (batch, seq_len, hidden)
+        out = self.fc(lstm_out[:, -1, :])              # last hidden → logits
+        return out
 
-    def send(self, data):
-        self.ws.send(json.dumps(data))
-        self.req_id += 1
+def init_model():
+    global model, optimizer
+    model = DigitLSTM(vocab_size=10, embed_dim=EMBEDDING_DIM, hidden_size=HIDDEN_SIZE).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    def on_open(self, ws):
-        print("Connection opened")
-        self.authorize()
+def train_on_sequence(seq: List[int], epochs: int):
+    if len(seq) < 2:
+        return
+    model.train()
+    data = torch.tensor(seq[:-1], dtype=torch.long, device=device).unsqueeze(0)   # (1, len-1)
+    targets = torch.tensor(seq[1:],  dtype=torch.long, device=device).unsqueeze(0)  # (1, len-1)
 
-    def authorize(self):
-        self.send({
-            "authorize": self.token,
-            "req_id": self.req_id
-        })
+    for _ in range(epochs):
+        optimizer.zero_grad()
+        logits = model(data)                        # (1, vocab)
+        loss = criterion(logits, targets[:, -1])    # predict next after whole prefix
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        optimizer.step()
 
-    def load_history(self):
-        self.send({
-            "ticks_history": self.symbol,
-            "end": "latest",
-            "count": 1000,
-            "req_id": self.req_id,
-            "style": "ticks"
-        })
+def predict_next_probabilities(last_digit: int) -> Optional[np.ndarray]:
+    if model is None:
+        return None
+    model.eval()
+    with torch.no_grad():
+        inp = torch.tensor([[last_digit]], dtype=torch.long, device=device)
+        logits = model(inp)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+    return probs
 
-    def subscribe_ticks(self):
-        self.send({
-            "ticks": self.symbol,
-            "subscribe": 1,
-            "req_id": self.req_id
-        })
+# ────────────────────────────────────────────────
+#                 DERIV API MESSAGES
+# ────────────────────────────────────────────────
+def authorize():
+    ws.send(json.dumps({"authorize": AUTH_TOKEN}))
 
-    def buy_contract(self):
-        if self.last_digit is None:
-            return
+def subscribe_ticks():
+    ws.send(json.dumps({"ticks": SYMBOL, "subscribe": 1}))
 
-        if len(self.recent_digits) < 2:
-            print("Skipping trade: Not enough recent digits for analysis")
-            return
+def send_proposal(contract_type: str, barrier: str):
+    payload = {
+        "proposal": 1,
+        "amount": current_stake,
+        "basis": "stake",
+        "contract_type": contract_type,
+        "currency": CURRENCY,
+        "duration": DURATION,
+        "duration_unit": DURATION_UNIT,
+        "symbol": SYMBOL,
+        "barrier": barrier
+    }
+    ws.send(json.dumps(payload))
 
-        tick1 = self.recent_digits[-1]
-        tick2 = self.recent_digits[-2]
+def buy_contract(proposal_id: int, ask_price: float):
+    ws.send(json.dumps({"buy": str(proposal_id), "price": ask_price}))
 
-        if not (tick1 >= 5 and tick1 != 8 and tick2 <= 5):
-            print("Skipping trade: Analysis condition not met")
-            return
+def subscribe_contract(contract_id: int):
+    ws.send(json.dumps({
+        "proposal_open_contract": 1,
+        "contract_id": contract_id,
+        "subscribe": 1
+    }))
 
-        # Calculate probabilities for both options
-        prob_under7 = self.markov.predict_prob_under(self.last_digit, 7)
-        prob_over2 = self.markov.predict_prob_over(self.last_digit, 2)
+# ────────────────────────────────────────────────
+#                   WEBSOCKET CALLBACKS
+# ────────────────────────────────────────────────
+def on_message(ws, message):
+    global total_profit, current_stake, consecutive_losses
+    global win_low, win_high, loss_low, loss_high
 
-        print(f"Predicted prob under 7: {prob_under7:.2f}")
-        print(f"Predicted prob over 2: {prob_over2:.2f}")
-
-        # Choose the option with the higher probability
-        if prob_under7 > prob_over2:
-            if prob_under7 < 0.6:
-                print("Skipping trade: Probability too low for under 7")
-                return
-            contract_type = "DIGITUNDER"
-            prediction = 7
-            print(f"Choosing under 7 with prob {prob_under7:.2f}")
-        else:
-            if prob_over2 < 0.6:
-                print("Skipping trade: Probability too low for over 2")
-                return
-            contract_type = "DIGITOVER"
-            prediction = 2
-            print(f"Choosing over 2 with prob {prob_over2:.2f}")
-
-        params = {
-            "buy": 1,
-            "price": self.current_stake,
-            "parameters": {
-                "amount": self.current_stake,
-                "basis": "stake",
-                "contract_type": contract_type,
-                "currency": "USD",
-                "duration": self.duration,
-                "duration_unit": "t",
-                "symbol": self.symbol,
-                "barrier": str(prediction)
-            },
-            "req_id": self.req_id
-        }
-        self.send(params)
-
-    def on_message(self, ws, message):
+    try:
         data = json.loads(message)
-        
-        if 'error' in data:
-            print(f"API Error: {data['error']}")
-            if self.active_contract and 'contract_id' in data.get('echo_req', {}):
-                if data['echo_req']['contract_id'] == self.contract_id:
-                    # Reset on error for this contract
-                    self.active_contract = False
-                    self.contract_id = None
-                    self.ticks_since_buy = 0
-        
-        msg_type = data.get('msg_type')
+    except:
+        print("Invalid JSON received")
+        return
 
-        if msg_type == 'authorize':
-            print("Authorized")
-            self.load_history()
+    msg_type = data.get("msg_type")
 
-        elif msg_type == 'history':
-            self.process_history(data)
+    if "error" in data:
+        print(f"API Error: {data['error']}")
+        return
 
-        elif msg_type == 'tick':
-            self.process_tick(data)
+    if msg_type == "tick":
+        quote = data["tick"]["quote"]
+        last_digit = int(math.floor(quote * 100)) % 10
 
-        elif msg_type == 'proposal_open_contract':
-            print(f"Received contract update: {data}")
-            self.process_contract(data)
+        with lock:
+            last_digits.append(last_digit)
 
-        elif msg_type == 'buy':
-            self.contract_id = data.get('buy', {}).get('contract_id')
-            if self.contract_id:
-                print(f"Contract bought: {self.contract_id}")
-                self.active_contract = True
-                self.ticks_since_buy = 0
-                self.subscribe_contract()
+            # Train / update model
+            if len(last_digits) == WINDOW_SIZE and model is None:
+                print("Initializing LSTM model...")
+                init_model()
+                train_on_sequence(list(last_digits), TRAIN_EPOCHS_INITIAL)
+                print("Model initialized")
+            elif len(last_digits) > WINDOW_SIZE and (len(last_digits) - WINDOW_SIZE) % UPDATE_MODEL_EVERY == 0:
+                print("Updating model...")
+                train_on_sequence(list(last_digits), TRAIN_EPOCHS_UPDATE)
+                print("Model updated")
+
+            decision = get_trade_decision()
+            if decision:
+                execute_trade(decision)
+
+    elif msg_type == "proposal":
+        prop = data["proposal"]
+        print(f"Proposal → ask: {prop['ask_price']:.4f} | payout: {prop['payout']:.4f}")
+        buy_contract(prop["id"], prop["ask_price"])
+
+    elif msg_type == "buy":
+        contract_id = data["buy"]["contract_id"]
+        print(f"Contract bought → ID: {contract_id}")
+        subscribe_contract(contract_id)
+
+    elif msg_type == "proposal_open_contract":
+        poc = data["proposal_open_contract"]
+        if poc.get("is_sold", 0) == 1:
+            profit = poc.get("profit", 0.0)
+            total_profit += profit
+            print(f"Trade closed → Profit: {profit:.2f} | Total: {total_profit:.2f}")
+
+            won = profit > 0
+            if won:
+                consecutive_losses = 0
+                current_stake = INITIAL_STAKE
             else:
-                if 'error' in data:
-                    print(f"Buy error: {data['error']}")
+                consecutive_losses += 1
+                if MARTINGALE:
+                    current_stake *= MARTINGALE_MULTIPLIER
 
-        else:
-            print(f"Unknown message type: {msg_type}, data: {data}")
+            # Update stats (for logging / future adaptive bias if you want)
+            # ...
 
-    def process_history(self, data):
-        if not self.history_loaded:
-            ticks = data.get('history', {}).get('prices', [])
-            last_digits = [floor((price * 100) % 10) for price in ticks]
-            self.markov.batch_update(last_digits)
-            self.recent_digits = last_digits[-10:]
-            self.history_loaded = True
-            print("Markov chain initialized with history")
-            self.subscribe_ticks()
+            check_risk_limits()
 
-    def process_tick(self, data):
-        quote = data.get('tick', {}).get('quote')
-        if quote:
-            self.last_digit = floor((quote * 100) % 10)
-            print(f"Last digit: {self.last_digit}")
+    elif msg_type == "authorize":
+        print("Authorized successfully")
+        subscribe_ticks()
 
-            if hasattr(self, 'prev_digit') and self.prev_digit is not None:
-                self.markov.update(self.prev_digit, self.last_digit)
-            self.prev_digit = self.last_digit
+def on_error(ws, error):
+    print(f"WebSocket error: {error}")
 
-            self.recent_digits.append(self.last_digit)
-            if len(self.recent_digits) > 10:
-                self.recent_digits = self.recent_digits[-10:]
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket closed")
+    global running
+    running = False
 
-            if self.active_contract:
-                self.ticks_since_buy += 1
-                if self.ticks_since_buy > 10:  # Timeout after 10 ticks without resolution
-                    print(f"Contract {self.contract_id} timeout after {self.ticks_since_buy} ticks, resetting")
-                    self.active_contract = False
-                    self.contract_id = None
-                    self.ticks_since_buy = 0
-                    print("Treating timeout as loss")
-                    self.loss += 1
-                    self.total_loss += self.current_stake
-                    self.total_profit -= self.current_stake
-                    if -self.total_profit >= self.stop_loss:
-                        print("Stop loss reached due to timeout")
-                        self.ws.close()
-            else:
-                if self.loss >= self.max_losses:
-                    self.loss = 0
-                    self.current_stake = self.win_stake
+def on_open(ws):
+    print("WebSocket connected")
+    authorize()
 
-                self.buy_contract()
+# ────────────────────────────────────────────────
+#                   STRATEGY LOGIC
+# ────────────────────────────────────────────────
+def get_trade_decision() -> Optional[str]:
+    if len(last_digits) < WINDOW_SIZE or model is None:
+        return None
 
-    def subscribe_contract(self):
-        self.send({
-            "proposal_open_contract": 1,
-            "contract_id": self.contract_id,
-            "subscribe": 1,
-            "req_id": self.req_id
-        })
+    last = last_digits[-1]
+    probs = predict_next_probabilities(last)
+    if probs is None:
+        return None
 
-    def process_contract(self, data):
-        contract = data.get('proposal_open_contract', {})
-        is_sold = contract.get('is_sold', 0)
-        if is_sold:
-            profit = contract.get('profit', 0)
-            self.total_profit += profit
-            self.total_loss -= profit
-            if self.total_loss < 0:
-                self.total_loss = 0
+    p_under = probs[0] + probs[1]          # digit 0 or 1
+    p_over  = sum(probs[2:])               # 2–9
 
-            if profit > 0:
-                print("Win")
-                self.loss = 0
-                self.count_loss = 0
-                self.current_stake = self.win_stake
-            else:
-                print("Loss")
-                self.loss += 1
+    print(f"AI probs → Under(0-1): {p_under:.4f} | Over(2-9): {p_over:.4f}")
 
-            if self.total_loss > 0:
-                self.count_loss += 1
-                if self.count_loss == 1:
-                    required = self.total_loss * 100 / self.payout_percent
-                    self.current_stake = round(required / self.martingale_split, 2)
-            else:
-                self.count_loss = 0
-                self.current_stake = self.win_stake
+    if p_under > PROB_THRESHOLD_UNDER:
+        return "DIGITUNDER"
+    if p_over > PROB_THRESHOLD_OVER:
+        return "DIGITOVER"
 
-            if self.current_stake < 0.35:
-                self.current_stake = 0.35
+    return None
 
-            self.active_contract = False
-            self.contract_id = None
-            self.ticks_since_buy = 0
+def execute_trade(contract_type: str):
+    barrier = "1"   # DigitOver 1 → barrier=1  (payout on 2-9)
+                    # DigitUnder 1 → barrier=1 (payout on 0-1)
+    print(f"→ Sending proposal for {contract_type}")
+    send_proposal(contract_type, barrier)
 
-            if self.total_profit >= self.expected_profit:
-                print("Expected profit reached")
-                self.ws.close()
-            elif -self.total_profit >= self.stop_loss:
-                print("Stop loss reached")
-                self.ws.close()
+# ────────────────────────────────────────────────
+#                 RISK MANAGEMENT
+# ────────────────────────────────────────────────
+def check_risk_limits():
+    global running
+    if total_profit <= STOP_LOSS:
+        print(f"STOP LOSS hit → {total_profit:.2f}")
+        running = False
+    elif total_profit >= TAKE_PROFIT:
+        print(f"TAKE PROFIT hit → {total_profit:.2f}")
+        running = False
+    elif consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+        print(f"Max consecutive losses ({consecutive_losses}) reached")
+        running = False
 
-    def on_error(self, ws, error):
-        print(f"Error: {error}")
+# ────────────────────────────────────────────────
+#                 GRACEFUL SHUTDOWN
+# ────────────────────────────────────────────────
+def signal_handler(sig, frame):
+    print("\nShutting down...")
+    global running
+    running = False
+    if ws:
+        ws.close()
 
-    def on_close(self, ws, close_status_code, close_reason):
-        print("Connection closed")
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
-# Usage
-# Replace with your Deriv token and app_id
-token = "y5XlAyZZDrPz764"
-app_id = "1089"
+# ────────────────────────────────────────────────
+#                      MAIN
+# ────────────────────────────────────────────────
+def main():
+    global ws
+    websocket.enableTrace(False)
 
-bot = DerivBot(token, app_id)
-bot.connect()
+    ws = websocket.WebSocketApp(
+        WS_URL,
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+
+    wst = threading.Thread(target=ws.run_forever, daemon=True)
+    wst.start()
+
+    try:
+        while running:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ws.close()
+        print("Bot stopped.")
+
+if __name__ == "__main__":
+    random.seed(time.time())
+    np.random.seed(int(time.time()))
+    torch.manual_seed(int(time.time()))
+    main()
