@@ -1,11 +1,14 @@
-# deriv_volatility_rise_fall_multi_tf_bot.py
+# deriv_volatility_1tick_1min_signal_bot.py
+# ────────────────────────────────────────────────
+# 1-TICK MARTINGALE BOT – SIGNAL BASED ONLY ON 1-MINUTE TIMEFRAME
 # Requirements: pip install websocket-client numpy rich
+# ────────────────────────────────────────────────
+
 import json
 import time
 import threading
 import signal
-from collections import defaultdict, deque
-import numpy as np
+from collections import deque
 import websocket
 from rich.live import Live
 from rich.table import Table
@@ -21,37 +24,26 @@ import os
 # CONFIGURATION
 # ────────────────────────────────────────────────
 APP_ID = "1089"
-AUTH_TOKEN = ""          # ← CHANGE THIS (create at app.deriv.com)
+AUTH_TOKEN = "WFabi7aeCbFjgvp"  # ← CHANGE THIS (from app.deriv.com)
+
 SYMBOLS = ["R_10", "R_25", "R_50", "R_75", "R_100"]
 SYMBOL_NAMES = {
-    "R_10": "Volatility 10",
-    "R_25": "Volatility 25", 
-    "R_50": "Volatility 50",
-    "R_75": "Volatility 75",
-    "R_100": "Volatility 100"
+    "R_10": "Volatility 10", "R_25": "Volatility 25", "R_50": "Volatility 50",
+    "R_75": "Volatility 75", "R_100": "Volatility 100"
 }
 
 INITIAL_STAKE = 0.35
-MARTINGALE_MULTIPLIER = 1.8                  # Set 1.0 to disable martingale
-MAX_CONCURRENT_TRADES = 3
-STOP_LOSS = -15.0
+MARTINGALE_MULTIPLIER = 1.8
+MAX_CONCURRENT_TRADES = 1           # Only one trade/market at a time
 TAKE_PROFIT = 5.0
 MAX_LOSSES = 25
 
-# Timeframes (seconds)
-ANALYSIS_TFS = [60, 300, 900]                # 1m, 5m, 15m for trend confirmation
-TF_NAMES = {60: "1m", 300: "5m", 900: "15m"}
-ENTRY_DURATION = 30                          # Lower timeframe trade duration
+ENTRY_DURATION = 1
+DURATION_UNIT = "t"                 # 1 tick
 
-# TRADING CONFIGURATION - CHANGE THESE TO CONTROL BEHAVIOR
-REQUIRE_ALL_TFS = False                       # Set to False to trade with any timeframe
-MIN_TFS_FOR_TRADE = 1                         # Minimum number of timeframes needed (1-3)
-HIGHER_TIMEFRAME_BIAS = True                  # Give more weight to higher timeframe
-USE_FAST_TRADING = True                        # Trade as soon as we have ANY trend
-
-# Trend detection settings
-TREND_STRENGTH_CANDLES = 3                    # Reduced for faster signals
-MIN_TREND_CANDLES = 2                          # Minimum candles needed (reduced)
+# Only 1-minute timeframe is used for signal
+SIGNAL_TF = 60                      # 1 minute
+TREND_STRENGTH_CANDLES = 5          # Lookback for trend detection
 
 WS_URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
 
@@ -64,317 +56,177 @@ consecutive_losses = 0
 open_trades = 0
 running = True
 ws = None
-last_tick_time = time.time()
-trade_check_counter = 0
-
-# Per-symbol data
-price_history = {sym: deque(maxlen=5000) for sym in SYMBOLS}           # raw ticks
-candles = {sym: {tf: [] for tf in ANALYSIS_TFS} for sym in SYMBOLS}   # OHLC per TF
-last_candle_time = {sym: {tf: 0 for tf in ANALYSIS_TFS} for sym in SYMBOLS}
-last_trade_time = {sym: 0 for sym in SYMBOLS}
-trend_cache = {sym: None for sym in SYMBOLS}
-last_prices = {sym: 0.0 for sym in SYMBOLS}
-price_change = {sym: 0.0 for sym in SYMBOLS}
-trade_history = deque(maxlen=10)  # Last 10 trades
-tf_ready = {sym: {tf: False for tf in ANALYSIS_TFS} for sym in SYMBOLS}
-
+trade_history = deque(maxlen=10)
 lock = threading.Lock()
 console = Console()
 
-# ────────────────────────────────────────────────
-# SIMPLE TREND DETECTION (FASTER)
-# ────────────────────────────────────────────────
-def detect_simple_trend(candles_list: list) -> str | None:
-    """Simpler, faster trend detection"""
-    if len(candles_list) < 2:
-        return None
-    
-    # Just look at last 2 candles for immediate direction
-    last_candle = candles_list[-1]
-    prev_candle = candles_list[-2]
-    
-    # Check if we're making higher highs/lows
-    if last_candle['high'] > prev_candle['high'] and last_candle['low'] > prev_candle['low']:
-        return "UP"
-    elif last_candle['high'] < prev_candle['high'] and last_candle['low'] < prev_candle['low']:
-        return "DOWN"
-    
-    # Check candle body direction
-    if last_candle['close'] > last_candle['open'] and last_candle['close'] > prev_candle['close']:
-        return "UP"
-    elif last_candle['close'] < last_candle['open'] and last_candle['close'] < prev_candle['close']:
-        return "DOWN"
-    
-    return None
+price_history = {sym: deque(maxlen=5000) for sym in SYMBOLS}
+candles_1m = {sym: [] for sym in SYMBOLS}           # Only keeping 1m candles
+last_candle_time_1m = {sym: 0 for sym in SYMBOLS}
+last_prices = {sym: 0.0 for sym in SYMBOLS}
+price_change = {sym: 0.0 for sym in SYMBOLS}
+last_trade_time = {sym: 0 for sym in SYMBOLS}
 
-def detect_price_action_trend(candles_list: list, lookback: int = 3) -> str | None:
-    """Detect trend using price action with smaller lookback"""
-    if len(candles_list) < lookback:
+# ────────────────────────────────────────────────
+# 1-MINUTE PRICE ACTION TREND DETECTION
+# ────────────────────────────────────────────────
+def detect_1m_trend(candles_list: list, lookback: int = TREND_STRENGTH_CANDLES) -> str | None:
+    if len(candles_list) < lookback + 1:
         return None
-    
-    recent_candles = candles_list[-lookback:]
-    highs = [c['high'] for c in recent_candles]
-    lows = [c['low'] for c in recent_candles]
-    
-    # Simplified trend detection
+
+    recent = candles_list[-lookback:]
+    highs = [c['high'] for c in recent]
+    lows  = [c['low']  for c in recent]
+
     higher_highs = all(highs[i] >= highs[i-1] for i in range(1, len(highs)))
-    higher_lows = all(lows[i] >= lows[i-1] for i in range(1, len(lows)))
-    lower_highs = all(highs[i] <= highs[i-1] for i in range(1, len(highs)))
-    lower_lows = all(lows[i] <= lows[i-1] for i in range(1, len(lows)))
-    
-    if higher_highs or higher_lows:
+    higher_lows  = all(lows[i]  >= lows[i-1]  for i in range(1, len(lows)))
+    lower_highs  = all(highs[i] <= highs[i-1] for i in range(1, len(highs)))
+    lower_lows   = all(lows[i]  <= lows[i-1]  for i in range(1, len(lows)))
+
+    recent_3 = recent[-3:]
+    bullish_count = sum(1 for c in recent_3 if c['close'] > c['open'])
+    bearish_count = sum(1 for c in recent_3 if c['close'] < c['open'])
+
+    if (higher_highs or higher_lows) and bullish_count >= 2:
         return "UP"
-    elif lower_highs or lower_lows:
+    if (lower_highs or lower_lows) and bearish_count >= 2:
         return "DOWN"
-    
-    return None
-
-def detect_trend_multi_tf(symbol: str) -> str | None:
-    """Detect trend across multiple timeframes with flexible requirements"""
-    tf_trends = {}
-    ready_tfs = 0
-    
-    for tf in ANALYSIS_TFS:
-        # Check if this timeframe has enough data
-        if len(candles[symbol][tf]) >= MIN_TREND_CANDLES:
-            tf_ready[symbol][tf] = True
-            ready_tfs += 1
-            
-            # Detect trend
-            if USE_FAST_TRADING:
-                trend = detect_simple_trend(candles[symbol][tf])
-            else:
-                trend = detect_price_action_trend(candles[symbol][tf], TREND_STRENGTH_CANDLES)
-                
-            if trend:
-                tf_trends[tf] = trend
-        else:
-            tf_ready[symbol][tf] = False
-    
-    # Check if we have enough ready timeframes
-    if ready_tfs < MIN_TFS_FOR_TRADE:
-        return None
-    
-    # If we require all TFs, check if they agree
-    if REQUIRE_ALL_TFS:
-        if len(tf_trends) == len(ANALYSIS_TFS) and len(set(tf_trends.values())) == 1:
-            return list(tf_trends.values())[0]
-        return None
-    
-    # Otherwise, use the highest timeframe that has a trend
-    if HIGHER_TIMEFRAME_BIAS and tf_trends:
-        # Try highest TF first
-        for tf in sorted(ANALYSIS_TFS, reverse=True):
-            if tf in tf_trends:
-                return tf_trends[tf]
-    
-    # If no higher TF trend, use any available trend
-    if tf_trends:
-        return list(tf_trends.values())[0]
-    
     return None
 
 # ────────────────────────────────────────────────
-# CANDLE BUILDER
+# CANDLE BUILDER – ONLY 1-MINUTE
 # ────────────────────────────────────────────────
-def update_candles(symbol: str, price: float, timestamp: int):
-    for tf in ANALYSIS_TFS:
-        candle_start = (timestamp // tf) * tf
-        
-        if candle_start > last_candle_time[symbol][tf]:
-            if candles[symbol][tf]:
-                candles[symbol][tf][-1]['close'] = price
-            
-            candles[symbol][tf].append({
-                'open': price, 'high': price, 'low': price, 'close': price,
-                'time': candle_start
-            })
-            last_candle_time[symbol][tf] = candle_start
-        else:
-            if candles[symbol][tf]:
-                c = candles[symbol][tf][-1]
-                c['high'] = max(c['high'], price)
-                c['low'] = min(c['low'], price)
-                c['close'] = price
+def update_1m_candles(symbol: str, price: float, timestamp: int):
+    candle_start = (timestamp // SIGNAL_TF) * SIGNAL_TF
+    if candle_start > last_candle_time_1m[symbol]:
+        if candles_1m[symbol]:
+            candles_1m[symbol][-1]['close'] = price
+        candles_1m[symbol].append({
+            'open': price, 'high': price, 'low': price, 'close': price,
+            'time': candle_start
+        })
+        last_candle_time_1m[symbol] = candle_start
+    else:
+        if candles_1m[symbol]:
+            c = candles_1m[symbol][-1]
+            c['high'] = max(c['high'], price)
+            c['low']  = min(c['low'], price)
+            c['close'] = price
 
 # ────────────────────────────────────────────────
-# TRADE DECISION & EXECUTION
+# TRADE DECISION – ONLY 1-MINUTE SIGNAL
 # ────────────────────────────────────────────────
 def check_and_trade():
     global open_trades, current_stake
-    
     with lock:
         if open_trades >= MAX_CONCURRENT_TRADES:
             return
-
         now = time.time()
         for symbol in SYMBOLS:
-            # Check cooldown
-            if now - last_trade_time[symbol] < ENTRY_DURATION + 5:
+            if now - last_trade_time[symbol] < 10:  # short cooldown
+                continue
+            if len(candles_1m[symbol]) < TREND_STRENGTH_CANDLES + 2:
                 continue
 
-            # Check if we have enough price history
-            if len(price_history[symbol]) < 20:  # Reduced requirement
-                continue
-
-            # Detect trend
-            trend = detect_trend_multi_tf(symbol)
+            trend = detect_1m_trend(candles_1m[symbol])
             if not trend:
                 continue
 
             contract_type = "CALL" if trend == "UP" else "PUT"
-            
-            # Log the trade to console (will show in UI footer)
-            console.print(f"[bold green]📊 TRADE SIGNAL: {symbol} - {trend} ({contract_type})[/bold green]")
-            
-            # Send proposal
-            proposal_request = {
+
+            proposal = {
                 "proposal": 1,
                 "amount": current_stake,
                 "basis": "stake",
                 "contract_type": contract_type,
                 "currency": "USD",
                 "duration": ENTRY_DURATION,
-                "duration_unit": "s",
+                "duration_unit": DURATION_UNIT,
                 "symbol": symbol
             }
-            ws.send(json.dumps(proposal_request))
-
+            ws.send(json.dumps(proposal))
             last_trade_time[symbol] = now
             open_trades += 1
-            break
+            break  # Only one trade at a time
 
 # ────────────────────────────────────────────────
-# UI GENERATION
+# UI (shows 1m trend prominently)
 # ────────────────────────────────────────────────
 def generate_ui():
     layout = Layout()
-    
-    # Split into header, main content, and footer
     layout.split(
         Layout(name="header", size=3),
         Layout(name="main"),
-        Layout(name="footer", size=8)
+        Layout(name="footer", size=6)
     )
-    
-    # Split main into left (market data) and right (status)
     layout["main"].split_row(
-        Layout(name="market_data", ratio=2),
+        Layout(name="market", ratio=2),
         Layout(name="status", ratio=1)
     )
-    
-    # Header
-    header_text = Text("DERIV VOLATILITY PRICE ACTION TRADING BOT", style="bold cyan")
-    header_text.append(f" | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="yellow")
-    layout["header"].update(Panel(header_text, box=box.ROUNDED))
-    
-    # Market Data Table
-    table = Table(title="Market Analysis", box=box.ROUNDED, header_style="bold magenta")
+
+    header = Text("1-TICK MARTINGALE BOT – 1 MINUTE SIGNAL ONLY", style="bold cyan")
+    header.append(f" | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="yellow")
+    layout["header"].update(Panel(header, box=box.ROUNDED))
+
+    table = Table(title="Markets (Signal from 1m only)", box=box.ROUNDED, header_style="bold magenta")
     table.add_column("Symbol", style="cyan", width=15)
     table.add_column("Price", justify="right", width=12)
     table.add_column("Change", justify="right", width=10)
-    for tf in ANALYSIS_TFS:
-        table.add_column(TF_NAMES[tf], justify="center", width=8)
-    table.add_column("Action", justify="center", width=10)
-    table.add_column("Ready", justify="center", width=6)
-    
+    table.add_column("1m Trend", justify="center", width=10)
+    table.add_column("Action", justify="center", width=12)
+
     with lock:
-        for symbol in SYMBOLS:
-            # Price and change
-            current_price = last_prices.get(symbol, 0)
-            change = price_change.get(symbol, 0)
-            change_str = f"{change:+.4f}"
-            change_style = "green" if change > 0 else "red" if change < 0 else "white"
-            
-            # Trend for each timeframe
-            tf_trends = []
-            all_ready = True
-            for tf in ANALYSIS_TFS:
-                if len(candles[symbol][tf]) >= MIN_TREND_CANDLES:
-                    if USE_FAST_TRADING:
-                        trend = detect_simple_trend(candles[symbol][tf])
-                    else:
-                        trend = detect_price_action_trend(candles[symbol][tf], TREND_STRENGTH_CANDLES)
-                    
-                    if trend == "UP":
-                        tf_trends.append("▲ UP")
-                    elif trend == "DOWN":
-                        tf_trends.append("▼ DOWN")
-                    else:
-                        tf_trends.append("─")
-                else:
-                    tf_trends.append("⏳")
-                    all_ready = False
-            
-            # Overall trend and action
-            overall_trend = detect_trend_multi_tf(symbol)
-            if overall_trend == "UP":
-                action = "📈 CALL"
-                action_style = "green"
-            elif overall_trend == "DOWN":
-                action = "📉 PUT"
-                action_style = "red"
-            else:
-                action = "⏸️ WAIT"
-                action_style = "yellow"
-            
-            # Ready status
-            ready_count = sum(1 for tf in ANALYSIS_TFS if len(candles[symbol][tf]) >= MIN_TREND_CANDLES)
-            ready_str = f"{ready_count}/{len(ANALYSIS_TFS)}"
-            
+        for sym in SYMBOLS:
+            price = last_prices.get(sym, 0)
+            chg = price_change.get(sym, 0)
+            chg_str = f"{chg:+.4f}"
+            chg_style = "green" if chg > 0 else "red" if chg < 0 else "white"
+
+            trend_1m = "▲ UP" if detect_1m_trend(candles_1m[sym]) == "UP" else \
+                       "▼ DOWN" if detect_1m_trend(candles_1m[sym]) == "DOWN" else "─"
+
+            action = "📈 CALL" if trend_1m == "▲ UP" else \
+                     "📉 PUT" if trend_1m == "▼ DOWN" else "⏸ WAIT"
+            action_style = "green" if "CALL" in action else "red" if "PUT" in action else "yellow"
+
             table.add_row(
-                SYMBOL_NAMES.get(symbol, symbol),
-                f"{current_price:.4f}",
-                Text(change_str, style=change_style),
-                *tf_trends,
-                Text(action, style=action_style),
-                ready_str
+                SYMBOL_NAMES.get(sym, sym),
+                f"{price:.4f}",
+                Text(chg_str, style=chg_style),
+                trend_1m,
+                Text(action, style=action_style)
             )
-    
-    # Add configuration info to table caption
-    table.caption = f"Config: Min TFs={MIN_TFS_FOR_TRADE} | Fast Mode={USE_FAST_TRADING} | Require All={REQUIRE_ALL_TFS}"
-    layout["market_data"].update(Panel(table, box=box.ROUNDED))
-    
-    # Status Panel
-    status_table = Table(show_header=False, box=box.ROUNDED, padding=(0,1))
-    status_table.add_column("Metric", style="cyan")
-    status_table.add_column("Value", style="yellow")
-    
+
+    layout["market"].update(Panel(table, box=box.ROUNDED))
+
+    status = Table(show_header=False, box=box.ROUNDED, padding=(0,1))
+    status.add_column("Metric", style="cyan")
+    status.add_column("Value", style="yellow")
     with lock:
-        status_table.add_row("Total P&L", f"${total_profit:+.2f}")
-        status_table.add_row("Current Stake", f"${current_stake:.2f}")
-        status_table.add_row("Open Trades", f"{open_trades}/{MAX_CONCURRENT_TRADES}")
-        status_table.add_row("Consecutive Losses", str(consecutive_losses))
-        status_table.add_row("Uptime", f"{int(time.time() - start_time)}s")
-        status_table.add_row("Last Tick", f"{int(time.time() - last_tick_time)}s ago")
-    
-    layout["status"].update(Panel(status_table, title="Bot Status", box=box.ROUNDED))
-    
-    # Trade History Footer
-    history_table = Table(title="Recent Trades", box=box.ROUNDED, header_style="bold blue")
-    history_table.add_column("Time", width=8)
-    history_table.add_column("Symbol", width=12)
-    history_table.add_column("Type", width=6)
-    history_table.add_column("Result", width=8)
-    history_table.add_column("P&L", width=10)
-    
+        status.add_row("P&L", f"${total_profit:+.2f}")
+        status.add_row("Stake", f"${current_stake:.2f}")
+        status.add_row("Trades", f"{open_trades}/{MAX_CONCURRENT_TRADES}")
+        status.add_row("Loss streak", str(consecutive_losses))
+        status.add_row("Uptime", f"{int(time.time() - start_time)}s")
+
+    layout["status"].update(Panel(status, title="Status", box=box.ROUNDED))
+
+    hist = Table(title="Recent Trades", box=box.ROUNDED, header_style="bold blue")
+    hist.add_column("Time", width=8)
+    hist.add_column("Symbol", width=12)
+    hist.add_column("Type", width=6)
+    hist.add_column("Result", width=8)
+    hist.add_column("P&L", width=10)
     with lock:
-        for trade in list(trade_history):
-            result_style = "green" if trade['profit'] > 0 else "red"
-            history_table.add_row(
-                trade['time'],
-                trade['symbol'],
-                trade['type'],
-                "WIN" if trade['profit'] > 0 else "LOSS",
-                Text(f"${trade['profit']:+.2f}", style=result_style)
+        for t in list(trade_history):
+            style = "green" if t['profit'] > 0 else "red"
+            hist.add_row(
+                t['time'], t['symbol'], t['type'],
+                "WIN" if t['profit'] > 0 else "LOSS",
+                Text(f"${t['profit']:+.2f}", style=style)
             )
-    
-    # If no trades yet, show waiting message
-    if not trade_history:
-        history_table.add_row("", "Waiting for", "first", "trade...", "")
-    
-    layout["footer"].update(Panel(history_table, box=box.ROUNDED))
-    
+    layout["footer"].update(Panel(hist, box=box.ROUNDED))
+
     return layout
 
 # ────────────────────────────────────────────────
@@ -384,13 +236,11 @@ def on_open(ws_obj):
     ws_obj.send(json.dumps({"authorize": AUTH_TOKEN}))
 
 def on_message(ws_obj, message):
-    global total_profit, current_stake, open_trades, consecutive_losses, last_tick_time
-    
+    global total_profit, current_stake, open_trades, consecutive_losses
     try:
         data = json.loads(message)
-    except json.JSONDecodeError:
+    except:
         return
-
     if "error" in data:
         return
 
@@ -400,65 +250,44 @@ def on_message(ws_obj, message):
         for sym in SYMBOLS:
             ws_obj.send(json.dumps({"ticks": sym, "subscribe": 1}))
             ws_obj.send(json.dumps({
-                "ticks_history": sym,
-                "count": 100,  # Reduced for faster startup
-                "end": "latest",
-                "style": "ticks"
+                "ticks_history": sym, "count": 200, "end": "latest", "style": "ticks"
             }))
 
     elif mt == "tick":
         sym = data["tick"]["symbol"]
         price = float(data["tick"]["quote"])
         ts = int(data["tick"]["epoch"])
-        last_tick_time = time.time()
-        
         with lock:
             if sym in last_prices:
                 price_change[sym] = price - last_prices[sym]
             last_prices[sym] = price
             price_history[sym].append(price)
-            update_candles(sym, price, ts)
+            update_1m_candles(sym, price, ts)
 
     elif mt == "history":
         sym = data["history"]["symbol"]
-        prices = data["history"]["prices"]
-        times = data["history"]["times"]
-        
-        with lock:
-            for price, ts in zip(prices, times):
-                price = float(price)
-                ts = int(ts)
-                price_history[sym].append(price)
-                update_candles(sym, price, ts)
+        for p, t in zip(data["history"]["prices"], data["history"]["times"]):
+            update_1m_candles(sym, float(p), int(t))
 
     elif mt == "proposal":
-        proposal_id = data["proposal"]["id"]
-        ask_price = data["proposal"]["ask_price"]
-        ws_obj.send(json.dumps({"buy": proposal_id, "price": ask_price}))
-
-    elif mt == "buy":
-        contract_id = data["buy"]["contract_id"]
-        contract_type = data["buy"]["contract_type"]
-        symbol = data["buy"]["symbol"]
-        buy_price = data["buy"]["buy_price"]
+        pid = data["proposal"]["id"]
+        ask = data["proposal"]["ask_price"]
+        ws_obj.send(json.dumps({"buy": pid, "price": ask}))
 
     elif mt == "proposal_open_contract":
-        contract = data["proposal_open_contract"]
-        
-        if contract.get("is_sold") == 1:
-            profit = float(contract.get("profit", 0))
-            symbol = contract.get("symbol", "Unknown")
-            contract_type = contract.get("contract_type", "Unknown")
-            
+        c = data["proposal_open_contract"]
+        if c.get("is_sold") == 1:
+            profit = float(c.get("profit", 0))
+            sym = c.get("symbol", "Unknown")
+            ctype = c.get("contract_type", "Unknown")
+
             total_profit += profit
             open_trades = max(0, open_trades - 1)
 
-            # Add to trade history
-            trade_time = datetime.now().strftime("%H:%M:%S")
             trade_history.append({
-                'time': trade_time,
-                'symbol': SYMBOL_NAMES.get(symbol, symbol),
-                'type': contract_type,
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'symbol': SYMBOL_NAMES.get(sym, sym),
+                'type': ctype,
                 'profit': profit
             })
 
@@ -470,70 +299,50 @@ def on_message(ws_obj, message):
                     consecutive_losses += 1
                     current_stake *= MARTINGALE_MULTIPLIER
 
-            # Check risk limits
-            if total_profit <= STOP_LOSS or total_profit >= TAKE_PROFIT or consecutive_losses >= MAX_LOSSES:
-                global running
-                running = False
+                if total_profit >= TAKE_PROFIT or consecutive_losses >= MAX_LOSSES:
+                    global running
+                    running = False
 
-def on_error(ws_obj, err): 
-    pass
-
-def on_close(ws_obj, *args): 
+def on_close(ws_obj, *args):
     global running
     running = False
 
 # ────────────────────────────────────────────────
-# MAIN LOOP
+# MAIN
 # ────────────────────────────────────────────────
 def main():
-    global ws, running, last_tick_time, total_profit, open_trades, consecutive_losses, current_stake, start_time
-    
+    global ws, running, start_time
     start_time = time.time()
-    
-    # Clear screen
+
     os.system('cls' if os.name == 'nt' else 'clear')
-    
-    console.print("[bold cyan]Starting Deriv Volatility Trading Bot...[/bold cyan]")
-    console.print(f"[yellow]Configuration: Min TFs={MIN_TFS_FOR_TRADE} | Fast Mode={USE_FAST_TRADING} | Require All={REQUIRE_ALL_TFS}[/yellow]")
-    
+    console.print("[bold cyan]Starting 1-TICK BOT – Signal from 1-minute candles only[/bold cyan]")
+
     websocket.enableTrace(False)
     ws = websocket.WebSocketApp(
         WS_URL,
         on_open=on_open,
         on_message=on_message,
-        on_error=on_error,
         on_close=on_close
     )
+    threading.Thread(target=ws.run_forever, daemon=True).start()
 
-    t = threading.Thread(target=ws.run_forever, daemon=True)
-    t.start()
-
-    # Live UI update
     with Live(generate_ui(), refresh_per_second=4, screen=True) as live:
-        last_trade_check = time.time()
-        
+        last_check = time.time()
         try:
             while running:
                 now = time.time()
-                
-                # Check for trades every 2 seconds (more frequent)
-                if now - last_trade_check >= 2:
+                if now - last_check >= 5:
                     check_and_trade()
-                    last_trade_check = now
-                
-                # Update UI
+                    last_check = now
                 live.update(generate_ui())
-                time.sleep(0.25)
-                
+                time.sleep(0.2)
         except KeyboardInterrupt:
             running = False
-    
-    if ws:
-        ws.close()
-    
-    console.print("\n[bold red]Bot Stopped[/bold red]")
-    console.print(f"[yellow]Final P&L: ${total_profit:+.2f}[/yellow]")
+        if ws:
+            ws.close()
+        console.print("\n[bold red]Stopped[/bold red]")
+        console.print(f"[yellow]Final P&L: ${total_profit:+.2f}[/yellow]")
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, lambda s,f: globals().update({"running": False}))
+    signal.signal(signal.SIGINT, lambda s,f: globals().update(running=False))
     main()
