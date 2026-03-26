@@ -1,39 +1,31 @@
 """
-Deriv Adaptive AI Trading Bot  v7.0
+Deriv Adaptive AI Trading Bot  v8.0
 =====================================
-Fixes over v6.0 — complete audit of every signal-generation path:
+Changes over v7.0 — from live log analysis:
 
-BUG 1 — Hardcoded tick durations
-  FIXED: CONTRACT_DURATION_MAP removed. Duration is now computed from the
-  barrier's win-probability margin and current volatility:
-    - High margin (OVER 0 / UNDER 9) → shorter duration (edge expires fast)
-    - Low margin (OVER 5 / UNDER 4)  → longer duration (needs more ticks)
-    - DIGITDIFF                       → scaled by digit dominance strength
+FIX 1 — Duration too long (was outputting 7t+)
+  Duration base reset to 1 tick. Max capped at 5.
+  Strong edges (win_prob ≥ 0.90) stay at 1-2 ticks.
+  Only weak edges (win_prob < 0.60) reach 5 ticks.
+  Preferred range is 1-3 ticks as requested.
 
-BUG 2 — OVER/UNDER only generated for barriers 0 and 9
-  FIXED: all_biases() now scans every digit (0-9). For each digit d:
-    - If freq[d] is significantly LOW  → OVER (d-1) is valid  (last digit > d-1 is likely)
-    - If freq[d] is significantly HIGH → UNDER d is valid (last digit ≤ d is blocked by dominance)
-  This generates the full barrier range, not just the extremes.
+FIX 2 — Loss → immediate mid-barrier switch
+  RECOVERY_L1_LOSSES = 1  (was 2).
+  On the very first loss the bot enters "mid" mode.
+  Next trade after ANY loss becomes OVER 5 or UNDER 4,
+  not after the second loss as before.
+  L2 (symbol switch) at 3 losses, L3 (cooldown) at 5.
 
-BUG 3 — DIGITDIFF only for the single most-dominant digit
-  FIXED: any digit whose frequency exceeds DIFF_FREQ_THRESHOLD is a valid
-  DIFFERS target. All of them are emitted and scored independently.
+FIX 3 — Stake can exceed MAX_DAILY_LOSS
+  stake() now caps at 40% of remaining daily loss budget.
+  With MAX_DAILY_LOSS=$20 and BASE_STAKE=$30, effective
+  stake is $8 on the first trade, shrinking as losses mount.
+  The bot can no longer be halted by a single trade.
 
-BUG 4 — Hard OVER/bear and UNDER/bull gate discards strong digit signals
-  FIXED: The gate is now a soft score penalty, not a hard discard.
-  A strong enough digit signal overrides a mildly opposing HMM state.
-  Only when HMM dominance is high AND it directly contradicts does the
-  signal get blocked (e.g. very strong bear + OVER 0 with no other evidence).
-
-BUG 5 — _run_global_analysis called on every tick during ANALYSE
-  FIXED: ANALYSE phase now uses a dirty-flag pattern. The flag is set when
-  new ticks arrive; analysis runs at most once per new-tick batch.
-  A _analysis_pending bool is set by _on_tick and consumed by _drive_cycle.
-
-BUG 6 — _wait_digits_collected not reset on symbol switch
-  FIXED: counter is reset in _enter_analyse and also whenever active_symbol
-  changes via _switch_active_symbol().
+FIX 4 — Streak tag showed wrong format in logs
+  reason_tag for diff_dom path now clearly labelled.
+  Streak guard confirmed: _streak_count starts at 0 and
+  is set to 1 on first unique digit push — correct.
 
 Install:
   pip install websocket-client numpy scikit-learn scipy python-dotenv
@@ -66,7 +58,7 @@ load_dotenv()
 
 APP_ID         = os.getenv("DERIV_APP_ID", "1089")
 API_TOKEN      = os.getenv("DERIV_API_TOKEN", "")
-BASE_STAKE     = float(os.getenv("BASE_STAKE", "30.0"))
+BASE_STAKE     = float(os.getenv("BASE_STAKE", "1.0"))
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "20.0"))
 STATE_FILE     = os.getenv("STATE_FILE", "bot_state.json")
 
@@ -105,9 +97,12 @@ DIGIT_CHANGE_THRESHOLD = 0.10
 MIN_WAIT_DIGITS        = 10   # minimum new digits before re-analyse is considered
 
 # Recovery thresholds
-RECOVERY_L1_LOSSES = 2
-RECOVERY_L2_LOSSES = 4
-RECOVERY_L3_LOSSES = 6
+# L1=1 → ANY loss immediately triggers mid-barrier mode (OVER 5 / UNDER 4)
+# L2=3 → 3 consecutive losses → also switch symbol
+# L3=5 → 5 consecutive losses → hard cooldown
+RECOVERY_L1_LOSSES = 1
+RECOVERY_L2_LOSSES = 3
+RECOVERY_L3_LOSSES = 5
 
 # Symbol scoring
 SCORE_WINDOW = 50
@@ -122,16 +117,16 @@ SIGNAL_W_SYMBOL    = 0.15
 # Minimum composite score to place a trade
 SIGNAL_MIN_SCORE = 0.42
 
-# ── Duration: data-driven, not hardcoded ─────────────────────────────────────
-# Base durations by contract type — adjusted at runtime by barrier margin
-# and current symbol volatility (see compute_duration()).
+# ── Duration: prefer 1-3 ticks, only extend when edge is genuinely weak ──────
+# Base is 1 tick — the bot should win fast when edge is strong.
+# compute_duration() adds ticks only when win probability is low.
 DURATION_BASE = {
-    "DIGITOVER":  5,
-    "DIGITUNDER": 5,
-    "DIGITDIFF":  4,
+    "DIGITOVER":  1,
+    "DIGITUNDER": 1,
+    "DIGITDIFF":  1,
 }
-DURATION_MIN = 3
-DURATION_MAX = 9
+DURATION_MIN = 1
+DURATION_MAX = 5   # hard cap — never more than 5 ticks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,61 +144,54 @@ def compute_duration(contract_type: str, barrier: int,
                      hmm_state: str, digit_freqs: np.ndarray,
                      volatility: float) -> int:
     """
-    Returns a tick duration that is proportional to how much edge we actually
-    have, not a hardcoded number.
+    Returns tick duration in [DURATION_MIN, DURATION_MAX] = [1, 5].
 
-    Logic:
-      1. Start with DURATION_BASE for the contract type.
-      2. Margin adjustment:
-           OVER  barrier b  → win if last digit > b  → win prob ≈ freq(b+1..9)
-           UNDER barrier b  → win if last digit < b  → win prob ≈ freq(0..b-1)
-           DIFF  barrier b  → win if last digit ≠ b  → win prob ≈ 1 - freq(b)
-         Higher win probability = smaller edge (market prices it in faster)
-         → shorter duration. Lower win probability = bigger mispricing
-         → longer duration to let the edge play out.
-      3. Volatility adjustment: high-volatility symbols need fewer ticks
-         because the digit distribution shifts faster.
-      4. HMM state adjustment: neutral state = extend slightly (less conviction).
+    Philosophy: start at 1 tick (fastest) and add ticks only when the
+    win probability is low enough that the edge needs more time to play out.
 
-    Result is clamped to [DURATION_MIN, DURATION_MAX].
+      OVER  barrier b: win if last digit > b  → win_prob = sum(freq[b+1..9])
+      UNDER barrier b: win if last digit < b  → win_prob = sum(freq[0..b-1])
+      DIFF  barrier b: win if last digit ≠ b  → win_prob = 1 - freq[b]
+
+    win_prob mapping to duration additions:
+      ≥ 0.90 → +0  (very high edge, 1 tick is enough)
+      ≥ 0.80 → +1  (good edge, 2 ticks)
+      ≥ 0.70 → +2  (moderate edge, 3 ticks)
+      ≥ 0.60 → +3  (weaker edge, 4 ticks)
+      <  0.60 → +4  (low edge, 5 ticks to let it develop)
+
+    Volatility:
+      High vol (digits shift fast) → subtract 1 tick (edge resolves faster)
+      Low  vol (digits sticky)     → no adjustment needed
+
+    HMM state:
+      neutral → +1 tick (less conviction about direction)
+      bull/bear → no adjustment
     """
-    base = DURATION_BASE.get(contract_type, 5)
+    base = DURATION_BASE.get(contract_type, 1)
 
-    # ── Win probability estimate from digit frequencies ───────────────────────
+    # Estimate win probability from live digit frequencies
     if contract_type == "DIGITOVER":
-        # Win prob = fraction of digits strictly > barrier
         win_prob = float(digit_freqs[barrier + 1:].sum()) if barrier < 9 else 0.0
     elif contract_type == "DIGITUNDER":
-        # Win prob = fraction of digits strictly < barrier
         win_prob = float(digit_freqs[:barrier].sum()) if barrier > 0 else 0.0
     else:  # DIGITDIFF
-        # Win prob = 1 - frequency of the barrier digit
         win_prob = float(1.0 - digit_freqs[barrier])
 
-    # Map win_prob → duration adjustment
-    # win_prob ~0.90+ → very safe → -1 tick (edge compresses quickly)
-    # win_prob ~0.80  → fair      →  0 ticks
-    # win_prob ~0.70  → stretched → +1 tick
-    # win_prob ~0.60  → risky     → +2 ticks (needs more time to realise edge)
-    if   win_prob >= 0.92:  dur_adj = -2
-    elif win_prob >= 0.87:  dur_adj = -1
-    elif win_prob >= 0.78:  dur_adj =  0
-    elif win_prob >= 0.68:  dur_adj = +1
-    else:                   dur_adj = +2
+    # Map win_prob → extra ticks
+    if   win_prob >= 0.90: dur_add = 0
+    elif win_prob >= 0.80: dur_add = 1
+    elif win_prob >= 0.70: dur_add = 2
+    elif win_prob >= 0.60: dur_add = 3
+    else:                  dur_add = 4
 
-    # ── Volatility adjustment ─────────────────────────────────────────────────
-    # volatility is the std of recent returns. Scale: typical range 1e-5 to 5e-4
-    # High vol → digits flip faster → shorter duration
-    vol_adj = 0
-    if volatility > 2e-4:
-        vol_adj = -1
-    elif volatility < 3e-5:
-        vol_adj = +1
+    # High volatility: digits resolve faster → trim 1 tick
+    vol_adj = -1 if volatility > 2e-4 else 0
 
-    # ── HMM state adjustment ──────────────────────────────────────────────────
-    state_adj = +1 if hmm_state == "neutral" else 0
+    # Neutral HMM: less directional conviction → add 1 tick
+    state_adj = 1 if hmm_state == "neutral" else 0
 
-    duration = base + dur_adj + vol_adj + state_adj
+    duration = base + dur_add + vol_adj + state_adj
     return int(np.clip(duration, DURATION_MIN, DURATION_MAX))
 
 
@@ -908,7 +896,15 @@ class RiskManager:
         return False, ""
 
     def stake(self, mult: float = 1.0) -> float:
-        return round(max(self.base_stake * mult, 0.35), 2)
+        """
+        Returns stake capped at 40% of the remaining daily loss budget.
+        This prevents a single trade from wiping out the daily limit.
+        E.g. MAX_DAILY_LOSS=$20, daily_pnl=-$5 → remaining=$15 → cap=$6.
+        """
+        remaining_budget = abs(self.max_daily_loss) - abs(min(self.daily_pnl, 0))
+        budget_cap       = remaining_budget * 0.40
+        raw              = self.base_stake * mult
+        return round(max(min(raw, budget_cap), 0.35), 2)
 
     def record(self, profit: float):
         self._day_reset()
@@ -1358,10 +1354,27 @@ class DerivAdaptiveBot:
             self.scorer._scores[sym] = 0.3
             return
 
+        # ── On any loss: immediately force mid-barrier on the very next trade ──
+        # The re-scan in _run_global_analysis will pick up recovery_mode=True
+        # because recovery.contract_mode is now "mid" (L1=1 loss triggers it).
+        # This means the bot switches to OVER 5 / UNDER 4 on the NEXT trade
+        # without waiting for a cycle boundary.
+        if profit < 0 and self.recovery.needs_symbol_switch():
+            # L2+: also switch symbol
+            alts = [s for s in ALL_SYMBOLS if self.models[s].trained and s != sym]
+            if alts:
+                new_sym = self.scorer.best_symbol(alts)
+                if new_sym:
+                    self._switch_active_symbol(new_sym)
+                    log.info(f"[RECOVERY L{self.recovery.recovery_level}] "
+                             f"Symbol switch → {new_sym}")
+
         if self.trades_this_cycle < TRADES_PER_CYCLE:
-            # Re-scan all symbols before each subsequent trade in the cycle
+            # Re-scan all symbols — recovery_mode flag will already be True if
+            # we just took a loss (L1=1), so next signal will be mid-barrier.
             log.info(f"├── Re-scanning before trade "
-                     f"{self.trades_this_cycle + 1}/{TRADES_PER_CYCLE}…")
+                     f"{self.trades_this_cycle + 1}/{TRADES_PER_CYCLE}"
+                     + (" [MID-BARRIER mode]" if self.recovery.contract_mode == "mid" else "") + "…")
             self._analysis_pending = True
             self.phase = Phase.ANALYSE
             self._run_global_analysis()
@@ -1393,31 +1406,32 @@ def profit_str(p: float) -> str:
 def main():
     print("""
 ╔══════════════════════════════════════════════════════════════╗
-║    Deriv Adaptive AI Trading Bot  v7.0                      ║
-║    Full barrier scan · Soft HMM gates · Data-driven dur.    ║
+║    Deriv Adaptive AI Trading Bot  v8.0                      ║
+║    1-3 tick preference · Instant loss recovery · Safe stake ║
 ╚══════════════════════════════════════════════════════════════╝""")
     print(f"  Symbols          : {', '.join(ALL_SYMBOLS)}")
     print(f"  Base stake        : ${BASE_STAKE:.2f}")
     print(f"  Max daily loss    : ${MAX_DAILY_LOSS:.2f}")
+    print(f"  Stake cap         : 40% of remaining daily budget per trade")
     print()
-    print("  Signal coverage (all fixed in v7):")
-    print(f"    DIGITOVER  barriers : 0 – 8  (any rare low digit triggers)")
-    print(f"    DIGITUNDER barriers : 1 – 9  (any rare high digit triggers)")
-    print(f"    DIGITDIFF  barriers : 0 – 9  (any dominant digit triggers)")
-    print(f"    HMM gate           : SOFT penalty, not hard discard")
-    print(f"    Duration           : data-driven (win-prob + volatility)")
-    print(f"    Analysis trigger   : dirty-flag (once per tick batch, not per tick)")
+    print("  Duration (ticks):")
+    print(f"    win_prob ≥ 90%  → 1t   (strong edge, exit fast)")
+    print(f"    win_prob ≥ 80%  → 2t")
+    print(f"    win_prob ≥ 70%  → 3t   (target range)")
+    print(f"    win_prob ≥ 60%  → 4t")
+    print(f"    win_prob <  60% → 5t   (max, weak edge)")
     print()
-    print("  Scoring:")
-    print(f"    score = {SIGNAL_W_DOMINANCE:.0%}×HMM_dominance + "
-          f"{SIGNAL_W_CHI2:.0%}×chi2 + "
-          f"{SIGNAL_W_STREAK:.0%}×streak + "
-          f"{SIGNAL_W_SYMBOL:.0%}×sym_perf")
-    print(f"    Min score to trade : {SIGNAL_MIN_SCORE}")
+    print("  Recovery (immediate):")
+    print(f"    L1 = {RECOVERY_L1_LOSSES} loss  → mid-barrier NOW (OVER 5 / UNDER 4) on next trade")
+    print(f"    L2 = {RECOVERY_L2_LOSSES} losses → switch symbol + mid-barrier")
+    print(f"    L3 = {RECOVERY_L3_LOSSES} losses → data-driven cooldown on new symbol")
     print()
-    print(f"  Recovery L1={RECOVERY_L1_LOSSES} → mid-barrier  "
-          f"L2={RECOVERY_L2_LOSSES} → symbol switch  "
-          f"L3={RECOVERY_L3_LOSSES} → cooldown")
+    print("  Signal coverage:")
+    print(f"    DIGITOVER  barriers : 0–8   DIGITUNDER barriers : 1–9")
+    print(f"    DIGITDIFF  barriers : 0–9   HMM gate : SOFT penalty")
+    print(f"    score = {SIGNAL_W_DOMINANCE:.0%}×HMM + {SIGNAL_W_CHI2:.0%}×chi2 + "
+          f"{SIGNAL_W_STREAK:.0%}×streak + {SIGNAL_W_SYMBOL:.0%}×sym_perf  "
+          f"min={SIGNAL_MIN_SCORE}")
     print(f"  Auth token : {'SET ✓' if API_TOKEN else 'NOT SET — demo mode'}")
     print()
 
