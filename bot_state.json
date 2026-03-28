@@ -1,651 +1,81 @@
 {
-  "saved_at": "2026-03-24T20:03:10.683215",
+  "saved_at": "2026-03-28T16:48:39.387356",
   "risk": {
-    "daily_pnl": 174.29999999999984,
-    "total_trades": 90,
-    "total_wins": 90,
-    "trade_date": "2026-03-24"
+    "daily_pnl": 0.59,
+    "total_trades": 5,
+    "total_wins": 5,
+    "trade_date": "2026-03-28"
   },
   "scores": {
-    "R_10": 1.0,
+    "R_10": 0.5,
     "R_25": 0.5,
     "R_50": 0.5,
     "R_75": 0.5,
     "R_100": 0.5,
     "1HZ10V": 0.5,
-    "1HZ25V": 0.5,
+    "1HZ25V": 1.0,
     "1HZ50V": 0.5
   },
   "trade_log": [
     {
-      "ts": "2026-03-21T16:39:32.411805",
-      "symbol": "R_10",
+      "ts": "2026-03-28T16:48:13.397251",
+      "symbol": "1HZ25V",
       "type": "DIGITDIFF",
+      "barrier": 0,
+      "dur": 5,
+      "score": 0.925,
+      "recovery": false,
       "profit": 0.09,
-      "streak": 0
+      "cons_losses": 0,
+      "daily_pnl": 0.09
     },
     {
-      "ts": "2026-03-21T16:39:34.378918",
-      "symbol": "R_10",
+      "ts": "2026-03-28T16:48:18.562959",
+      "symbol": "1HZ25V",
       "type": "DIGITDIFF",
+      "barrier": 1,
+      "dur": 2,
+      "score": 0.8,
+      "recovery": false,
       "profit": 0.09,
-      "streak": 0
+      "cons_losses": 0,
+      "daily_pnl": 0.18
     },
     {
-      "ts": "2026-03-21T16:39:36.410238",
-      "symbol": "R_10",
+      "ts": "2026-03-28T16:48:26.511171",
+      "symbol": "1HZ25V",
       "type": "DIGITDIFF",
+      "barrier": 0,
+      "dur": 5,
+      "score": 1.0,
+      "recovery": false,
       "profit": 0.09,
-      "streak": 0
+      "cons_losses": 0,
+      "daily_pnl": 0.27
     },
     {
-      "ts": "2026-03-21T16:39:42.450694",
-      "symbol": "R_10",
+      "ts": "2026-03-28T16:48:31.398584",
+      "symbol": "1HZ25V",
       "type": "DIGITDIFF",
+      "barrier": 1,
+      "dur": 2,
+      "score": 0.8,
+      "recovery": false,
       "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:39:44.421190",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:39:46.448777",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:28.428246",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:30.434227",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:32.562993",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:38.446349",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:40.361878",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:40:42.430870",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:24.374323",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:26.386009",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:28.438325",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:34.406294",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:36.420860",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:41:38.390105",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:42:20.452684",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-21T16:42:22.441595",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:46.857904",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:48.656484",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:50.826052",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:52.728412",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:57.462355",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:57.686820",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:57.690163",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:58.622946",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:49:58.626174",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:00.711739",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:02.682572",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:04.674545",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:06.638889",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:08.741996",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:57.557399",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:57.564529",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:57.582230",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:57.586810",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:50:58.811937",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:00.814346",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:06.819326",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:06.821590",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:06.822941",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:06.824187",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:08.867366",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:08.870934",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:08.875678",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:09.071548",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:10.811422",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:10.813887",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:10.815594",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:10.817286",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:12.861971",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:12.864109",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:12.865232",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:13.069327",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:15.265621",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:15.267871",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:15.269039",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T08:51:15.270175",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:36.915566",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:38.805048",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:40.890367",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:42.959267",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:44.904664",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:46.849235",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:46.853339",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:48.851869",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:48.862163",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:50.832709",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:52.784916",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:54.835949",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:56.882940",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:50:58.751232",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:40.810690",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:42.743238",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:44.810359",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:46.804070",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:48.738697",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T19:51:50.717501",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 2.89,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:02:58.817189",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:00.912422",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:03.016717",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:04.859290",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:06.682282",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:06.689044",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:08.849543",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:08.851629",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:10.673453",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
-    },
-    {
-      "ts": "2026-03-24T20:03:10.683167",
-      "symbol": "R_10",
-      "type": "DIGITDIFF",
-      "profit": 0.09,
-      "streak": 0
+      "cons_losses": 0,
+      "daily_pnl": 0.36
+    },
+    {
+      "ts": "2026-03-28T16:48:39.387306",
+      "symbol": "1HZ25V",
+      "type": "DIGITOVER",
+      "barrier": 1,
+      "dur": 5,
+      "score": 0.8,
+      "recovery": false,
+      "profit": 0.23,
+      "cons_losses": 0,
+      "daily_pnl": 0.59
     }
   ]
 }
