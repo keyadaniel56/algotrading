@@ -100,6 +100,15 @@ def _adaptive_feature_window_len(n: int) -> int:
     return max(20, min(120, int(n * 0.33)))
 
 
+def _zone(d: int) -> int:
+    """Map digit to zone: 0=low(0-3), 1=mid(4-5), 2=high(6-9)."""
+    if d <= 3:
+        return 0
+    if d <= 5:
+        return 1
+    return 2
+
+
 def build_features(last_digits: list[int]) -> tuple[list[float], dict[str, float]]:
     data = list(last_digits) if last_digits else [0]
     d0 = data[-1]
@@ -121,6 +130,45 @@ def build_features(last_digits: list[int]) -> tuple[list[float], dict[str, float
     d1 = data[-2] if len(data) >= 2 else d0
     d2 = data[-3] if len(data) >= 3 else d1
 
+    # --- Pattern signals ---
+
+    # Alternation: how often consecutive digits differ in zone (high vs low flip)
+    alt_window = window[-10:] if len(window) >= 2 else window
+    alternations = sum(
+        1 for i in range(1, len(alt_window))
+        if _zone(alt_window[i]) != _zone(alt_window[i - 1])
+    )
+    alternation_rate = alternations / max(1, len(alt_window) - 1)
+
+    # Zone transition momentum: last 5 ticks vs prior 5 ticks (over5 rate shift)
+    short5 = data[-5:] if len(data) >= 5 else data
+    prior5 = data[-10:-5] if len(data) >= 10 else data[:max(1, len(data) - 5)]
+    momentum = (
+        sum(1 for d in short5 if d >= 6) / len(short5)
+        - sum(1 for d in prior5 if d >= 6) / max(1, len(prior5))
+    )
+
+    # Zone transition: did last digit cross a zone boundary vs previous?
+    zone_crossed = float(_zone(d0) != _zone(d1))
+
+    # Bigram transition bias: P(current_zone | prev_zone) from recent window
+    # Encode as: how often prev zone led to high zone (over5) in last 20 ticks
+    bg_window = data[-20:] if len(data) >= 20 else data
+    prev_was_high = [1 for i in range(1, len(bg_window)) if bg_window[i - 1] >= 6 and bg_window[i] >= 6]
+    prev_was_low_now_high = [1 for i in range(1, len(bg_window)) if bg_window[i - 1] <= 3 and bg_window[i] >= 6]
+    bigram_hh = len(prev_was_high) / max(1, sum(1 for d in bg_window[:-1] if d >= 6))
+    bigram_lh = len(prev_was_low_now_high) / max(1, sum(1 for d in bg_window[:-1] if d <= 3))
+
+    # Run length: how many consecutive ticks in same zone (high or low)
+    zone_run = 1
+    cur_zone = _zone(d0)
+    for i in range(len(data) - 2, -1, -1):
+        if _zone(data[i]) == cur_zone:
+            zone_run += 1
+        else:
+            break
+    zone_run = min(zone_run, 10)
+
     x: list[float] = []
     x.extend(_digit_one_hot(d0))
     x.extend(_digit_one_hot(d1))
@@ -129,6 +177,13 @@ def build_features(last_digits: list[int]) -> tuple[list[float], dict[str, float
     x.append(under4_rate)
     x.append(even_rate)
     x.append(streak / 10.0)
+    # Pattern features
+    x.append(alternation_rate)
+    x.append(momentum)
+    x.append(zone_crossed)
+    x.append(bigram_hh)
+    x.append(bigram_lh)
+    x.append(zone_run / 10.0)
     x.append(1.0)
 
     diag = {
@@ -140,6 +195,12 @@ def build_features(last_digits: list[int]) -> tuple[list[float], dict[str, float
         "under4_rate_w": under4_rate,
         "even_rate_w": even_rate,
         "same_digit_streak": float(streak),
+        "alternation_rate": alternation_rate,
+        "momentum": momentum,
+        "zone_crossed": zone_crossed,
+        "bigram_hh": bigram_hh,
+        "bigram_lh": bigram_lh,
+        "zone_run": float(zone_run),
     }
     return x, diag
 
@@ -161,18 +222,21 @@ class DigitsAI:
         self._m_over.update(x, 1 if d >= 6 else 0)
         self._m_under.update(x, 1 if d <= 3 else 0)
 
+    def digit_probs(self, last_digits: list[int]) -> list[float]:
+        """Return predicted probability for each digit 0-9."""
+        x, _ = build_features(last_digits)
+        return self._m_digit.predict_proba(x)
+
     def score(self, last_digits: list[int], recovery: bool = False) -> tuple[float, float, dict[str, float]]:
         x, diag = build_features(last_digits)
         p_digits = self._m_digit.predict_proba(x)
 
         if recovery:
-            # OVER_5: digits 6-9 (~40% base), UNDER_4: digits 0-3 (~40% base)
             p_over_raw = sum(p_digits[6:10])
             p_under_raw = sum(p_digits[0:4])
             base_over, base_under = 0.4, 0.4
         else:
-            # OVER_1: digits 2-9 (~80% base), UNDER_8: digits 0-7 (~80% base)
-            # Use true base rates so rescaling produces meaningful confidence
+            # OVER_1: digits 2-9 (~80%), UNDER_8: digits 0-7 (~80%)
             p_over_raw = sum(p_digits[2:10])
             p_under_raw = sum(p_digits[0:8])
             base_over, base_under = 0.8, 0.8
@@ -263,19 +327,33 @@ def decision_from_scores(
         if conf < min_confidence:
             reasons.append(f"skip: confidence {conf:.3f} < min_conf {min_confidence:.3f}")
             return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
-        # Require p_win to be meaningfully above 0.5 (model must favor this side).
-        if p_win < 0.52:
-            reasons.append(f"skip: p_win {p_win:.3f} not sufficiently above 0.5")
+        # Recovery trades require higher conviction: stronger p_win and confidence.
+        recovery_min_conf = max(min_confidence, 0.25) if is_recovery else min_confidence
+        recovery_min_pwin = 0.58 if is_recovery else 0.52
+        if conf < recovery_min_conf:
+            reasons.append(f"skip: recovery conf {conf:.3f} < recovery_min_conf {recovery_min_conf:.3f}")
             return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
-        reasons.append(f"trade: {best} (conf={conf:.3f}, p_win={p_win:.3f})")
+        if p_win < recovery_min_pwin:
+            reasons.append(f"skip: p_win {p_win:.3f} not sufficiently above {recovery_min_pwin:.2f}")
+            return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
+        # Edge filter only applies to recovery mode (OVER_5/UNDER_4) where payout supports it.
+        # Normal mode (OVER_1/UNDER_8) has structurally negative edge due to low payout.
+        if is_recovery and edge < min_edge:
+            reasons.append(f"skip: edge {edge:+.3%} < min_edge {min_edge:+.3%}")
+            return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
+        reasons.append(f"trade: {best} (conf={conf:.3f}, p_win={p_win:.3f}, edge={edge:+.3%})")
         return Decision(action=best, p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
 
     # Legacy fixed-threshold policy.
     if conf < min_confidence:
         reasons.append(f"skip: confidence {conf:.3f} < MIN_CONFIDENCE {min_confidence:.3f}")
         return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
-    if p_win < 0.52:
-        reasons.append(f"skip: p_win {p_win:.3f} not sufficiently above 0.5")
+    recovery_min_pwin = 0.58 if is_recovery else 0.52
+    if p_win < recovery_min_pwin:
+        reasons.append(f"skip: p_win {p_win:.3f} not sufficiently above {recovery_min_pwin:.2f}")
         return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
-    reasons.append(f"trade: {best} (conf {conf:.3f}, p_win={p_win:.3f})")
+    if is_recovery and edge < min_edge:
+        reasons.append(f"skip: edge {edge:+.3%} < min_edge {min_edge:+.3%}")
+        return Decision(action="SKIP", p_win=p_win, confidence=conf, edge=edge, reasons=reasons)
+    reasons.append(f"trade: {best} (conf={conf:.3f}, p_win={p_win:.3f}, edge={edge:+.3%})")
     return Decision(action=best, p_win=p_win, confidence=conf, edge=edge, reasons=reasons)

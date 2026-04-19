@@ -63,13 +63,13 @@ def load_config() -> BotConfig:
         duration=_getenv_int("DURATION", 1),
         duration_unit=_getenv("DURATION_UNIT", "t") or "t",
         adaptive_mode=_getenv_bool("ADAPTIVE_MODE", True),
-        min_edge=_getenv_float("MIN_EDGE", 0.012),
+        min_edge=_getenv_float("MIN_EDGE", 0.05),
         min_confidence=_getenv_float("MIN_CONFIDENCE", 0.15),
         cooldown_seconds=_getenv_int("COOLDOWN_SECONDS", 6),
         window_ticks=_getenv_int("WINDOW_TICKS", 250),
         dry_run=_getenv_bool("DRY_RUN", False),
         max_daily_loss=_getenv_float("MAX_DAILY_LOSS", 5.0),
         take_profit=_getenv_float("TAKE_PROFIT", 0.0),
-        max_trades_per_session=_getenv_int("MAX_TRADES_PER_SESSION", 50),
+        max_trades_per_session=_getenv_int("MAX_TRADES_PER_SESSION", 3),
     )
 
